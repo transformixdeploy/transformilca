@@ -20,3 +20,4 @@ transformers>=4.41.0
 torch>=2.2.0
 colorthief>=0.2.1
 Pillow>=9.0.0
+gunicorn
