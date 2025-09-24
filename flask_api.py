@@ -1,6 +1,5 @@
 from flask import Flask, request, jsonify
 from typing import Any, Dict
-import asyncio
 
 # Reuse existing project services
 from seo_analyzer import SEOAnalyzer
@@ -90,7 +89,7 @@ def map_seo_to_response(seo_result: Dict[str, Any], gpt_insights: Dict[str, Any]
 
 
 @app.post("/ai/website-swot-analysis")
-def website_swot_analysis():
+async def website_swot_analysis():
     try:
         body = request.get_json(force=True, silent=True) or {}
 
@@ -112,7 +111,7 @@ def website_swot_analysis():
             gpt_result = await gpt_service.generate_seo_insights(seo_result)
             return map_seo_to_response(seo_result, gpt_result)
 
-        response_payload = asyncio.run(run_analysis(website_url))
+        response_payload = await run_analysis(website_url)
         return jsonify(response_payload), 200
 
     except Exception as e:
