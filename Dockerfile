@@ -31,21 +31,10 @@ RUN apt-get update \
     libpangocairo-1.0-0 \
  && rm -rf /var/lib/apt/lists/*
 
-# Install Google Chrome stable
-RUN wget -qO- https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-linux-signing-keyring.gpg \
- && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-linux-signing-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
- && apt-get update \
- && apt-get install -y --no-install-recommends google-chrome-stable \
+# Install Chromium and matching driver from Debian repos
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends chromium chromium-driver \
  && rm -rf /var/lib/apt/lists/*
-
-# Install matching Chromedriver
-RUN CHROME_VERSION=$(google-chrome --version | awk '{print $3}') \
- && MAJOR=$(echo $CHROME_VERSION | cut -d. -f1) \
- && LATEST=$(wget -qO- https://chromedriver.storage.googleapis.com/LATEST_RELEASE_$MAJOR) \
- && wget -O /tmp/chromedriver.zip https://chromedriver.storage.googleapis.com/$LATEST/chromedriver_linux64.zip \
- && unzip /tmp/chromedriver.zip -d /usr/local/bin/ \
- && rm /tmp/chromedriver.zip \
- && chmod +x /usr/local/bin/chromedriver
 
 WORKDIR /app
 
@@ -59,6 +48,7 @@ COPY . .
 
 # Env expected to be provided by Render
 ENV PYTHONUNBUFFERED=1
+ENV CHROME_BIN=/usr/bin/chromium
 
 # Health: avoid TF noisy logs (optional)
 ENV TF_CPP_MIN_LOG_LEVEL=2
