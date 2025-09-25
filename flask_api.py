@@ -7,6 +7,7 @@ from seo_analyzer import SEOAnalyzer
 from gpt_insights_service import GPTInsightsService
 from helpers import is_valid_url, validate_url
 from sentiment_analyzer import SentimentAnalyzer
+from social_analyzer import SocialAnalyzer
 
 
 app = Flask(__name__)
@@ -120,6 +121,88 @@ def website_swot_analysis():
         finally:
             loop.close()
         return jsonify(response_payload), 200
+    except Exception as e:
+        return jsonify({"error": f"Failed to process request: {str(e)}"}), 500
+
+@app.post("/ai/social-swot-analysis")
+def social_swot_analysis():
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+
+        instagram_link = (body.get("instagram_link") or "").strip()
+        if not instagram_link:
+            return jsonify({"error": "instagram_link is required"}), 400
+
+        if not is_valid_url(instagram_link):
+            instagram_link = validate_url(instagram_link)
+            if not is_valid_url(instagram_link):
+                return jsonify({"error": "Invalid instagram_link. Must include http(s) scheme and domain."}), 400
+
+        analyzer = SocialAnalyzer()
+        gpt_service = GPTInsightsService()
+
+        async def run_social(url: str) -> Dict[str, Any]:
+            social_result = await analyzer.analyze_social_url(url)
+            gpt_result = await gpt_service.generate_social_insights(social_result)
+
+            # Map to required schema
+            platform = social_result.get("platform", "Social")
+            url_val = social_result.get("url", url)
+            profile = social_result.get("profile_data", {}) or {}
+            content = social_result.get("content_analysis", {}) or {}
+            detailed = social_result.get("detailed_data", {}) or {}
+
+            # Additional metrics
+            posts_count = detailed.get("posts_count", 0) or detailed.get("content_analysis", {}).get("posts_count", 0) or 0
+            engagement = detailed.get("engagement", {}) or {}
+            avg_likes = engagement.get("avg_likes", 0) or content.get("avg_likes", 0) or 0
+            avg_comments = engagement.get("avg_comments", 0) or content.get("avg_comments", 0) or 0
+            engagement_per_post = engagement.get("engagement_per_post", 0) or 0
+
+            # Top hashtags
+            top_hashtags_map = detailed.get("content_analysis", {}).get("top_hashtags", {}) or {}
+            if not top_hashtags_map and isinstance(content.get("hashtags"), list):
+                # fallback: frequency 1 for list
+                top_hashtags_map = {tag: 1 for tag in content.get("hashtags", [])}
+            top_hashtags = [{"tag": tag, "frequency": freq} for tag, freq in top_hashtags_map.items()]
+
+            insights = (gpt_result or {}).get("insights", {})
+
+            payload = {
+                "analysisTitle": f"{platform} Analysis for {url_val}",
+                "followers": profile.get("follower_count", 0) or 0,
+                "following": profile.get("following_count", 0) or 0,
+                "engagementRate": (content.get("engagement_rate", 0) or 0) * 100,
+                "profileInfo": {
+                    "basicInfo": {
+                        "name": profile.get("name", "") or profile.get("full_name", ""),
+                        "bio": profile.get("bio", "") or "",
+                        "verified": bool(profile.get("verification_status", False)),
+                        "private": bool(profile.get("is_private", False)),
+                        "website": profile.get("external_url", "") or "",
+                    },
+                    "additionalMetrics": {
+                        "postsCount": posts_count or 0,
+                        "averageLikes": float(avg_likes or 0),
+                        "averageComments": float(avg_comments or 0),
+                        "EngagementPerPost": float(engagement_per_post or 0),
+                    },
+                },
+                "topHashTags": top_hashtags,
+                "fullSocialAnalysis": insights.get("full_analysis", ""),
+                "competitiveAnalysis": gpt_result.get("competitive_analysis", []) or [],
+            }
+            return payload
+
+        loop = asyncio.new_event_loop()
+        try:
+            asyncio.set_event_loop(loop)
+            response_payload = loop.run_until_complete(run_social(instagram_link))
+        finally:
+            loop.close()
+
+        return jsonify(response_payload), 200
+
     except Exception as e:
         return jsonify({"error": f"Failed to process request: {str(e)}"}), 500
 @app.post("/ai/customer-sentiment-analysis")
