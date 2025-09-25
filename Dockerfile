@@ -13,7 +13,6 @@ RUN apt-get update \
     fonts-liberation \
     libglib2.0-0 \
     libnss3 \
-    libgconf-2-4 \
     libfontconfig1 \
     libxi6 \
     libxcursor1 \
