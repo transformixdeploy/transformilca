@@ -1,10 +1,12 @@
 from flask import Flask, request, jsonify
 from typing import Any, Dict
+import asyncio
 
 # Reuse existing project services
 from seo_analyzer import SEOAnalyzer
 from gpt_insights_service import GPTInsightsService
 from helpers import is_valid_url, validate_url
+from sentiment_analyzer import SentimentAnalyzer
 
 
 app = Flask(__name__)
@@ -89,7 +91,7 @@ def map_seo_to_response(seo_result: Dict[str, Any], gpt_insights: Dict[str, Any]
 
 
 @app.post("/ai/website-swot-analysis")
-async def website_swot_analysis():
+def website_swot_analysis():
     try:
         body = request.get_json(force=True, silent=True) or {}
 
@@ -111,8 +113,135 @@ async def website_swot_analysis():
             gpt_result = await gpt_service.generate_seo_insights(seo_result)
             return map_seo_to_response(seo_result, gpt_result)
 
-        response_payload = await run_analysis(website_url)
+        loop = asyncio.new_event_loop()
+        try:
+            asyncio.set_event_loop(loop)
+            response_payload = loop.run_until_complete(run_analysis(website_url))
+        finally:
+            loop.close()
         return jsonify(response_payload), 200
+    except Exception as e:
+        return jsonify({"error": f"Failed to process request: {str(e)}"}), 500
+@app.post("/ai/customer-sentiment-analysis")
+def customer_sentiment_analysis():
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+
+        industry = (body.get("industry_field") or "").strip()
+        country = (body.get("country") or "").strip()
+
+        if not industry or not country:
+            return jsonify({"error": "industry_field and country are required"}), 400
+
+        # Fixed parameters per requirement
+        MAX_COMPETITORS = 5
+        REVIEWS_PER_COMPETITOR = 100
+
+        analyzer = SentimentAnalyzer()
+
+        # Run full competitor sentiment analysis
+        async def run_competitor_analysis() -> Dict[str, Any]:
+            return await analyzer.analyze_competitors_sentiment(
+                industry=industry,
+                region=country,
+                max_competitors=MAX_COMPETITORS,
+                reviews_per_competitor=REVIEWS_PER_COMPETITOR,
+            )
+
+        loop = asyncio.new_event_loop()
+        try:
+            asyncio.set_event_loop(loop)
+            analysis_results = loop.run_until_complete(run_competitor_analysis())
+        finally:
+            loop.close()
+
+        # Map to required response schema
+        competitor_results = analysis_results.get("competitor_results", [])
+        combined = analysis_results.get("combined_analysis", {})
+        combined_summary = combined.get("combined_summary", {})
+
+        # competitorsAnalyized list
+        competitors_analyzed_list = []
+        for result in competitor_results:
+            comp = result.get("competitor_info", {})
+            summary = result.get("sentiment_summary", {})
+            pct = summary.get("sentiment_percentages", {})
+            competitors_analyzed_list.append({
+                "name": comp.get("name", ""),
+                "googleRating": comp.get("rating", 0) or 0,
+                "reviewsAnalyzed": result.get("total_reviews_analyzed", 0) or 0,
+                "positivePercentage": pct.get("Positive", 0) or 0,
+                "negativePercentage": pct.get("Negative", 0) or 0,
+                "avgSentiment": summary.get("average_polarity", 0) or 0,
+            })
+
+        # competitorsDetails
+        competitors_details = []
+        for result in competitor_results:
+            comp = result.get("competitor_info", {})
+            ai_insights = result.get("ai_insights", {})
+            ai_summary = (ai_insights.get("insights", {}) or {}).get("summary") or ai_insights.get("summary", "") or ""
+            competitors_details.append({
+                "address": comp.get("address", "") or "",
+                "googleMaps": comp.get("google_maps_url", "") or "",
+                "aiInsights": ai_summary,
+            })
+
+        # competitorSentimentComparisonChart
+        sentiment_chart = []
+        for result in competitor_results:
+            comp = result.get("competitor_info", {})
+            summary = result.get("sentiment_summary", {})
+            pct = summary.get("sentiment_percentages", {})
+            sentiment_chart.append({
+                "name": comp.get("name", ""),
+                "negative": pct.get("Negative", 0) or 0,
+                "positive": pct.get("Positive", 0) or 0,
+                "neutral": pct.get("Neutral", 0) or 0,
+            })
+
+        # competitorRating_averageSentiment_chart
+        rating_vs_sentiment = []
+        for result in competitor_results:
+            comp = result.get("competitor_info", {})
+            summary = result.get("sentiment_summary", {})
+            rating_vs_sentiment.append({
+                "googleRating": comp.get("rating", 0) or 0,
+                "averageSentiment": summary.get("average_polarity", 0) or 0,
+                "competitorName": comp.get("name", ""),
+            })
+
+        # Pie chart for combined summary
+        pie = {
+            "title": f"{industry.title()} sentiment distribution in {country}",
+            "positive": combined_summary.get("sentiment_percentages", {}).get("Positive", 0) or 0,
+            "negative": combined_summary.get("sentiment_percentages", {}).get("Negative", 0) or 0,
+            "neutral": combined_summary.get("sentiment_percentages", {}).get("Neutral", 0) or 0,
+        }
+
+        # Reviews analyzed per competitor
+        reviews_per_comp_list = []
+        for result in competitor_results:
+            comp = result.get("competitor_info", {})
+            reviews_per_comp_list.append({
+                "name": comp.get("name", ""),
+                "reviews": result.get("total_reviews_analyzed", 0) or 0,
+            })
+
+        payload = {
+            "analysisTitle": f"{industry.title()} Industry Analysis - {country}",
+            "competitorsAnalyzedNumber": combined.get("total_competitors_analyzed", len(competitor_results)) or 0,
+            "totalReview": combined.get("total_reviews_analyzed", 0) or 0,
+            "avgGoogleRating": round(sum([(r.get("competitor_info", {}).get("rating", 0) or 0) for r in competitor_results]) / max(len(competitor_results), 1), 2) if competitor_results else 0,
+            "competitorsAnalyized": competitors_analyzed_list,
+            "competitorsDetails": competitors_details,
+            "competitorSentimentComparisonChart": sentiment_chart,
+            "competitorRating_averageSentiment_chart": rating_vs_sentiment,
+            "pieChart": pie,
+            "reviewsAnalyzedPerCompetitor": reviews_per_comp_list,
+        }
+
+        return jsonify(payload), 200
 
     except Exception as e:
         return jsonify({"error": f"Failed to process request: {str(e)}"}), 500
