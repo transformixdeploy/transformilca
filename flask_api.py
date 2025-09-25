@@ -1,6 +1,9 @@
 from flask import Flask, request, jsonify
 from typing import Any, Dict
 import asyncio
+import base64
+import io
+from PIL import Image
 
 # Reuse existing project services
 from seo_analyzer import SEOAnalyzer
@@ -8,6 +11,8 @@ from gpt_insights_service import GPTInsightsService
 from helpers import is_valid_url, validate_url
 from sentiment_analyzer import SentimentAnalyzer
 from social_analyzer import SocialAnalyzer
+from branding_analyzer import BrandingAnalyzer
+from colorthief import ColorThief
 
 
 app = Flask(__name__)
@@ -202,6 +207,124 @@ def social_swot_analysis():
             loop.close()
 
         return jsonify(response_payload), 200
+
+    except Exception as e:
+        return jsonify({"error": f"Failed to process request: {str(e)}"}), 500
+
+@app.post("/ai/branding-audit")
+def branding_audit():
+    try:
+        # Parse multipart form
+        website_url = (request.form.get("website_url") or "").strip()
+        instagram_link = (request.form.get("instagram_link") or "").strip()
+        logo_file = request.files.get("logoUpload")
+
+        urls = []
+        if website_url and is_valid_url(validate_url(website_url)):
+            urls.append(validate_url(website_url))
+        if instagram_link and is_valid_url(validate_url(instagram_link)):
+            urls.append(validate_url(instagram_link))
+
+        if not urls:
+            return jsonify({"error": "Provide at least one valid URL in website_url or instagram_link"}), 400
+
+        # Optional: build branding profile from logo colors
+        branding_profile = None
+        logo_image_b64 = None
+        dominant_hex = ""
+        palette_hex = []
+        if logo_file:
+            try:
+                img_bytes = logo_file.read()
+                logo_image_b64 = base64.b64encode(img_bytes).decode("utf-8")
+
+                # Extract colors
+                color_thief = ColorThief(io.BytesIO(img_bytes))
+                dom = color_thief.get_color(quality=1)
+                pal = color_thief.get_palette(color_count=6, quality=1) or []
+
+                def rgb_to_hex(rgb):
+                    return '#{:02x}{:02x}{:02x}'.format(rgb[0], rgb[1], rgb[2])
+
+                dominant_hex = rgb_to_hex(dom)
+                palette_hex = [rgb_to_hex(c) for c in pal]
+
+                branding_profile = {
+                    "logo": {"image": logo_image_b64, "filename": logo_file.filename},
+                    "colors": {"dominant": dominant_hex, "palette": palette_hex},
+                }
+            except Exception:
+                pass
+
+        analyzer = BrandingAnalyzer()
+
+        async def run_branding():
+            return await analyzer.analyze_branding(urls, branding_profile)
+
+        loop = asyncio.new_event_loop()
+        try:
+            asyncio.set_event_loop(loop)
+            result = loop.run_until_complete(run_branding())
+        finally:
+            loop.close()
+
+        if not result or "branding_analysis" not in result:
+            return jsonify({"error": "Branding analysis failed"}), 500
+
+        analysis = result["branding_analysis"] or {}
+
+        # Images from screenshots
+        website_img_b64 = ""
+        insta_img_b64 = ""
+        for s in result.get("screenshots", []):
+            u = s.get("url", "")
+            if website_url and website_url in u:
+                website_img_b64 = s.get("screenshot", "")
+            if instagram_link and instagram_link in u:
+                insta_img_b64 = s.get("screenshot", "")
+
+        payload = {
+            "brandColors": {
+                "dominanColor": dominant_hex,
+                "colors": palette_hex,
+            },
+            "executiveSummary": analysis.get("executive_summary", ""),
+            "overallBrandIdentity_firstImpression": {
+                "strengths": analysis.get("overall_brand_impression", {}).get("strengths", []),
+                "roomForImprovement": analysis.get("overall_brand_impression", {}).get("room_for_improvement", []),
+            },
+            "visualBrandingElements": {
+                "colorPalette": {
+                    "analysis": analysis.get("visual_branding_elements", {}).get("color_palette", {}).get("analysis", ""),
+                    "recommendations": analysis.get("visual_branding_elements", {}).get("color_palette", {}).get("recommendations", []),
+                },
+                "typography": {
+                    "analysis": analysis.get("visual_branding_elements", {}).get("typography", {}).get("analysis", ""),
+                    "recommendations": analysis.get("visual_branding_elements", {}).get("typography", {}).get("recommendations", []),
+                },
+            },
+            "messaging_content_style": {
+                "content": analysis.get("messaging_and_content_style", {}).get("content", ""),
+                "recommendations": analysis.get("messaging_and_content_style", {}).get("recommendations", []),
+            },
+            "highlights_stories": {
+                "analysis": analysis.get("highlights_and_stories", {}).get("analysis", ""),
+                "recommendations": analysis.get("highlights_and_stories", {}).get("recommendations", []),
+            },
+            "gridStrategy": {
+                "analysis": analysis.get("grid_strategy", {}).get("analysis", ""),
+                "recommendations": analysis.get("grid_strategy", {}).get("recommendations", []),
+            },
+            "scores": [
+                {"title": item.get("area", ""), "score": item.get("score", 0)}
+                for item in (analysis.get("scorecard", []) or [])
+            ],
+            "websiteImage": {"data": website_img_b64, "mimeType": "image/png"} if website_img_b64 else {"data": "", "mimeType": ""},
+            "instaImage": {"data": insta_img_b64, "mimeType": "image/png"} if insta_img_b64 else {"data": "", "mimeType": ""},
+            "logoImage": {"data": logo_image_b64 or "", "mimeType": "image/png" if logo_image_b64 else ""},
+        }
+
+        return jsonify(payload), 200
 
     except Exception as e:
         return jsonify({"error": f"Failed to process request: {str(e)}"}), 500
